@@ -1,0 +1,23 @@
+# Rust
+target/
+Cargo.lock
+
+# Keys and generated files
+keys/
+*.bin
+*.json
+!src/**/*.json
+!tests/**/*.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+test_keys/
