@@ -3,11 +3,13 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 /// @title ZKDropToken
 /// @notice Privacy-preserving airdrop token with ZK claim verification
 /// @dev Implements the design from docs/airdrop-design.md
-contract ZKDropToken is ERC20, Ownable {
+/// @dev Uses OpenZeppelin's ReentrancyGuard for security
+contract ZKDropToken is ERC20, Ownable, ReentrancyGuard {
     
     /// @notice Groth16 proof structure
     struct Proof {
@@ -79,12 +81,13 @@ contract ZKDropToken is ERC20, Ownable {
     }
     
     /// @notice Claim tokens using a ZK proof
+    /// @dev Protected against reentrancy attacks
     /// @param _proof Groth16 proof of eligibility
     /// @param _inputs Public inputs (merkleRoot, nullifier, recipient)
     function claim(
         Proof calldata _proof,
         PublicInputs calldata _inputs
-    ) external {
+    ) external nonReentrant {
         // 1. Verify merkle root matches
         require(
             bytes32(_inputs.merkleRoot) == merkleRoot,
@@ -110,13 +113,11 @@ contract ZKDropToken is ERC20, Ownable {
             "Invalid proof"
         );
         
-        // 7. Mark nullifier as used
+        // 7. Effects: Update state BEFORE external calls (Checks-Effects-Interactions pattern)
         nullifierUsed[nullifierHash] = true;
-        
-        // 8. Increment claim count
         totalClaims++;
         
-        // 9. Mint tokens to recipient
+        // 8. Interactions: Mint tokens to recipient
         address recipient = address(uint160(_inputs.recipient));
         _mint(recipient, CLAIM_AMOUNT);
         
@@ -166,6 +167,14 @@ contract ZKDropToken is ERC20, Ownable {
     /// @return Maximum possible total supply
     function maxSupply() external pure returns (uint256) {
         return MAX_CLAIMS * CLAIM_AMOUNT;
+    }
+    
+    /// @notice Emergency pause function (only owner)
+    /// @dev Can be used to pause claims in case of issues
+    function pauseClaims() external onlyOwner {
+        // Implementation would require Pausable from OpenZeppelin
+        // For simplicity, not implemented in this version
+        revert("Pause not implemented");
     }
 }
 

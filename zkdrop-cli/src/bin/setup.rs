@@ -9,7 +9,7 @@
 use ark_bn254::Bn254;
 use ark_groth16::Groth16;
 use ark_snark::SNARK;
-use ark_std::rand::SeedableRng;
+// Note: SeedableRng is re-exported from ark_std via rand
 use clap::Parser;
 use rand_chacha::ChaCha8Rng;
 use std::fs;

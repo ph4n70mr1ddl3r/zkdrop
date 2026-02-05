@@ -20,8 +20,9 @@ use std::path::PathBuf;
 
 use zkdrop_cli::{
     circuit::{AirdropClaimCircuit, AirdropPrivateInputs, AirdropPublicInputs},
-    merkle::{MerkleTree, MerkleTreeJson, tree_height_for_address_count},
+    merkle::{MerkleTree, MerkleTreeJson},
     poseidon::{address_to_field_element, compute_leaf, compute_nullifier},
+    secp256k1::{parse_private_key_hex, parse_address_hex, derive_all_from_private_key},
     generate_setup, generate_proof,
 };
 
@@ -95,6 +96,10 @@ enum Commands {
         /// Public inputs file
         #[arg(short, long)]
         public_inputs: PathBuf,
+        
+        /// Verifying key file
+        #[arg(short, long)]
+        verifying_key: Option<PathBuf>,
     },
     
     /// Run benchmark tests
@@ -102,6 +107,13 @@ enum Commands {
         /// Tree heights to test (comma-separated)
         #[arg(short, long, default_value = "4,8,12,16")]
         heights: String,
+    },
+    
+    /// Derive public key and address from private key
+    Derive {
+        /// Private key (hex string, 0x prefix optional)
+        #[arg(short, long)]
+        private_key: String,
     },
 }
 
@@ -152,9 +164,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::VerifyProof {
             proof,
             public_inputs,
-        } => verify_proof_cmd(proof, public_inputs),
+            verifying_key,
+        } => verify_proof_cmd(proof, public_inputs, verifying_key),
         
         Commands::Benchmark { heights } => benchmark_cmd(heights),
+        
+        Commands::Derive { private_key } => derive_cmd(private_key),
     }
 }
 
@@ -169,42 +184,71 @@ fn generate_proof_cmd(
     println!("Generating ZK proof...");
     
     // Parse private key
-    let private_key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))?;
-    let private_key = Fr254::from_be_bytes_mod_order(&private_key_bytes);
+    let private_key_bytes = parse_private_key_hex(&private_key_hex)
+        .map_err(|e| format!("Invalid private key: {}", e))?;
+    
+    // Derive public key and address from private key
+    let derived = derive_all_from_private_key(&private_key_bytes)
+        .map_err(|e| format!("Failed to derive public key: {}", e))?;
+    
+    println!("  Derived address: 0x{}", hex::encode(derived.address));
     
     // Parse recipient address
-    let recipient_addr = hex::decode(recipient_str.trim_start_matches("0x"))?;
-    let recipient_bytes: [u8; 20] = recipient_addr.try_into()
-        .map_err(|_| "Invalid address length")?;
-    let recipient_fe = address_to_field_element(recipient_bytes);
+    let recipient_addr = parse_address_hex(&recipient_str)
+        .map_err(|e| format!("Invalid recipient address: {}", e))?;
+    let recipient_fe = address_to_field_element(recipient_addr);
     
     // Load merkle tree
-    let tree_json_str = fs::read_to_string(&merkle_tree_path)?;
-    let tree_json: MerkleTreeJson = serde_json::from_str(&tree_json_str)?;
+    let tree_json_str = fs::read_to_string(&merkle_tree_path)
+        .map_err(|e| format!("Failed to read merkle tree file: {}", e))?;
+    let tree_json: MerkleTreeJson = serde_json::from_str(&tree_json_str)
+        .map_err(|e| format!("Invalid merkle tree JSON: {}", e))?;
     
-    // For now, generate mock values for testing
-    // In production, derive these from the private key
-    let mut rng = ChaCha8Rng::from_entropy();
+    // Find the user's address in the tree
+    let user_address_hex = format!("0x{}", hex::encode(derived.address));
+    let address_index = tree_json.addresses.iter()
+        .position(|a| a.to_lowercase() == user_address_hex.to_lowercase())
+        .ok_or("Your derived address was not found in the merkle tree. Are you eligible?")?;
     
-    // Generate mock public key (in production: derive from private key using secp256k1)
-    let pk_x = Fr254::rand(&mut rng);
-    let pk_y = Fr254::rand(&mut rng);
+    println!("  Found address at index {} in merkle tree", address_index);
     
-    // Generate mock merkle path (in production: look up from tree)
-    let tree_height = tree_height_for_address_count(tree_json.addresses.len());
-    let merkle_path: Vec<Fr254> = (0..tree_height).map(|_| Fr254::rand(&mut rng)).collect();
-    let path_indices: Vec<bool> = (0..tree_height).map(|i| i % 2 == 0).collect();
+    // Rebuild tree to generate merkle path
+    let leaves: Vec<Fr254> = tree_json.addresses.iter()
+        .map(|addr| {
+            let addr_bytes = parse_address_hex(addr)
+                .expect("Address in tree file should be valid");
+            compute_leaf(address_to_field_element(addr_bytes))
+        })
+        .collect();
     
-    // Generate mock merkle root (in production: compute from tree)
-    let merkle_root = Fr254::rand(&mut rng);
+    let tree = MerkleTree::new(leaves)
+        .map_err(|e| format!("Failed to build merkle tree: {}", e))?;
+    
+    // Generate merkle proof
+    let merkle_proof = tree.generate_proof(address_index)
+        .map_err(|e| format!("Failed to generate merkle proof: {}", e))?;
+    
+    // Convert merkle proof to circuit format
+    let merkle_path: Vec<Fr254> = merkle_proof.path.iter()
+        .map(|p| p.sibling)
+        .collect();
+    let path_indices: Vec<bool> = merkle_proof.path.iter()
+        .map(|p| p.direction == 1)
+        .collect();
+    
+    let merkle_root = tree.root;
+    let tree_height = tree.height();
     
     // Compute nullifier
     let nullifier = compute_nullifier(
         Fr254::from(chain_id),
         merkle_root,
-        pk_x,
-        pk_y,
+        derived.pkx_fe,
+        derived.pky_fe,
     );
+    
+    println!("  Merkle root: 0x{}", hex::encode(merkle_root.into_bigint().to_bytes_be()));
+    println!("  Nullifier: 0x{}", hex::encode(nullifier.into_bigint().to_bytes_be()));
     
     // Build inputs
     let public_inputs = AirdropPublicInputs {
@@ -213,25 +257,30 @@ fn generate_proof_cmd(
         recipient: recipient_fe,
     };
     
+    let private_key_fe = Fr254::from_be_bytes_mod_order(&private_key_bytes);
+    
     let private_inputs = AirdropPrivateInputs {
-        private_key,
+        private_key: private_key_fe,
         merkle_path,
         path_indices,
-        pk_x,
-        pk_y,
+        pk_x: derived.pkx_fe,
+        pk_y: derived.pky_fe,
     };
     
     // Create circuit
     let circuit = AirdropClaimCircuit::new(tree_height, chain_id)
-        .with_witness(public_inputs, private_inputs);
+        .with_witness(public_inputs.clone(), private_inputs);
     
-    // Generate setup (in production, this would be pre-generated)
+    // Generate setup
     println!("Generating setup...");
-    let (pk, _vk) = generate_setup(circuit.clone(), &mut rng)?;
+    let mut rng = ChaCha8Rng::from_entropy();
+    let (pk, _vk) = generate_setup(circuit.clone(), &mut rng)
+        .map_err(|e| format!("Setup generation failed: {}", e))?;
     
     // Generate proof
     println!("Generating proof...");
-    let proof = generate_proof(circuit, &pk, &mut rng)?;
+    let proof = generate_proof(circuit, &pk, &mut rng)
+        .map_err(|e| format!("Proof generation failed: {}", e))?;
     
     // Serialize proof
     let proof_file = ProofFile {
@@ -268,23 +317,28 @@ fn build_tree_cmd(
     println!("Building Merkle tree...");
     
     // Read addresses file
-    let addresses_str = fs::read_to_string(&addresses_path)?;
+    let addresses_str = fs::read_to_string(&addresses_path)
+        .map_err(|e| format!("Failed to read addresses file: {}", e))?;
+    
     let addresses: Vec<String> = addresses_str
         .lines()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
     
+    if addresses.is_empty() {
+        return Err("No addresses found in input file".into());
+    }
+    
     println!("  Loading {} addresses...", addresses.len());
     
-    // Convert addresses to field elements
-    let leaves: Vec<Fr254> = addresses.iter()
-        .map(|addr| {
-            let addr_bytes = hex::decode(addr.trim_start_matches("0x")).unwrap();
-            let addr_array: [u8; 20] = addr_bytes.try_into().unwrap();
-            compute_leaf(address_to_field_element(addr_array))
-        })
-        .collect();
+    // Validate and convert addresses to field elements
+    let mut leaves = Vec::with_capacity(addresses.len());
+    for (idx, addr) in addresses.iter().enumerate() {
+        let addr_bytes = parse_address_hex(addr)
+            .map_err(|e| format!("Invalid address at line {}: {}", idx + 1, e))?;
+        leaves.push(compute_leaf(address_to_field_element(addr_bytes)));
+    }
     
     // Build tree
     let tree = MerkleTree::new(leaves)?;
@@ -319,22 +373,29 @@ fn generate_merkle_proof_cmd(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Generating Merkle proof...");
     
-    // Load merkle tree
-    let tree_json_str = fs::read_to_string(&merkle_tree_path)?;
-    let tree_json: MerkleTreeJson = serde_json::from_str(&tree_json_str)?;
+    // Parse target address
+    let target_addr = parse_address_hex(&address_str)
+        .map_err(|e| format!("Invalid address: {}", e))?;
+    let target_addr_hex = format!("0x{}", hex::encode(target_addr));
     
-    // Find address index
+    // Load merkle tree
+    let tree_json_str = fs::read_to_string(&merkle_tree_path)
+        .map_err(|e| format!("Failed to read merkle tree file: {}", e))?;
+    let tree_json: MerkleTreeJson = serde_json::from_str(&tree_json_str)
+        .map_err(|e| format!("Invalid merkle tree JSON: {}", e))?;
+    
+    // Find address index (case-insensitive comparison)
     let address = address_str.to_lowercase();
     let index = tree_json.addresses.iter()
         .position(|a| a.to_lowercase() == address)
-        .ok_or("Address not found in tree")?;
+        .ok_or(format!("Address {} not found in tree", target_addr_hex))?;
     
     // Rebuild tree (inefficient but simple)
     let leaves: Vec<Fr254> = tree_json.addresses.iter()
         .map(|addr| {
-            let addr_bytes = hex::decode(addr.trim_start_matches("0x")).unwrap();
-            let addr_array: [u8; 20] = addr_bytes.try_into().unwrap();
-            address_to_field_element(addr_array)
+            let addr_bytes = parse_address_hex(addr)
+                .expect("Address in tree should be valid");
+            compute_leaf(address_to_field_element(addr_bytes))
         })
         .collect();
     
@@ -357,21 +418,54 @@ fn generate_merkle_proof_cmd(
 fn verify_proof_cmd(
     proof_path: PathBuf,
     _public_inputs_path: PathBuf,
+    verifying_key_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Verifying proof...");
     
     // Load proof
-    let proof_str = fs::read_to_string(&proof_path)?;
-    let proof_file: ProofFile = serde_json::from_str(&proof_str)?;
+    let proof_str = fs::read_to_string(&proof_path)
+        .map_err(|e| format!("Failed to read proof file: {}", e))?;
+    let proof_file: ProofFile = serde_json::from_str(&proof_str)
+        .map_err(|e| format!("Invalid proof JSON: {}", e))?;
     
     println!("  Format: {}", proof_file.format);
     println!("  Merkle root: {}", proof_file.public_inputs.merkle_root);
     println!("  Nullifier: {}", proof_file.public_inputs.nullifier);
     println!("  Recipient: {}", proof_file.public_inputs.recipient);
     
-    // Note: Full verification requires the verifying key
-    println!("⚠️  Full verification not implemented in this version");
-    println!("   Use the smart contract for on-chain verification");
+    // Check if we have a verifying key to perform full verification
+    if verifying_key_path.is_some() {
+        println!("  Verifying key provided but full verification from JSON format");
+        println!("  is not yet implemented. Use the smart contract for on-chain verification.");
+        println!("  Format validation passed.");
+    } else {
+        println!("⚠️  No verifying key provided - performing format check only");
+        println!("   Use --verifying-key <path> for full cryptographic verification");
+        println!("   (Note: full verification from JSON is not yet implemented)");
+    }
+    
+    println!("\n✓ Proof format is valid");
+    
+    Ok(())
+}
+
+/// Derive public key and address from private key
+fn derive_cmd(private_key_hex: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Deriving keys from private key...");
+    
+    let private_key_bytes = parse_private_key_hex(&private_key_hex)
+        .map_err(|e| format!("Invalid private key: {}", e))?;
+    
+    let derived = derive_all_from_private_key(&private_key_bytes)
+        .map_err(|e| format!("Failed to derive keys: {}", e))?;
+    
+    println!("  Private Key: 0x{}", hex::encode(private_key_bytes));
+    println!("  Public Key X: 0x{}", hex::encode(derived.pk_x));
+    println!("  Public Key Y: 0x{}", hex::encode(derived.pk_y));
+    println!("  Address:      0x{}", hex::encode(derived.address));
+    println!("  pk_x as field element: {}", derived.pkx_fe);
+    println!("  pk_y as field element: {}", derived.pky_fe);
+    println!("  addr as field element: {}", derived.addr_fe);
     
     Ok(())
 }
@@ -382,8 +476,9 @@ fn benchmark_cmd(heights_str: String) -> Result<(), Box<dyn std::error::Error>> 
     
     let heights: Vec<usize> = heights_str
         .split(',')
-        .map(|s| s.trim().parse().unwrap())
-        .collect();
+        .map(|s| s.trim().parse())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Invalid height value: {}", e))?;
     
     let mut rng = ChaCha8Rng::from_entropy();
     
@@ -395,7 +490,6 @@ fn benchmark_cmd(heights_str: String) -> Result<(), Box<dyn std::error::Error>> 
         let num_addrs = 1usize << height;
         
         // Prepare witness
-        // use ark_ff::Field;
         let leaf = Fr254::rand(&mut rng);
         let path: Vec<Fr254> = (0..height).map(|_| Fr254::rand(&mut rng)).collect();
         let indices: Vec<bool> = (0..height).map(|i| i % 2 == 0).collect();
