@@ -231,3 +231,53 @@ mod tests {
         println!("Proof size: {} bytes", proof_bytes.len());
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::poseidon::poseidon_hash_arity2;
+    use ark_ff::UniformRand;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    /// Test full proof lifecycle with the simplified TestMerkleCircuit
+    /// This tests that the proving and verification pipeline works end-to-end
+    #[test]
+    fn test_merkle_proof_lifecycle() {
+        use ark_serialize::CanonicalSerialize;
+        
+        let mut rng = ChaCha8Rng::from_seed([99u8; 32]);
+        let tree_height = 4;
+        
+        // Generate a valid merkle tree
+        let leaves: Vec<Fr254> = (0..(1 << tree_height)).map(|i| Fr254::from(i as u64)).collect();
+        let tree = crate::merkle::MerkleTree::new(leaves.clone()).expect("Valid tree");
+        
+        // Get proof for leaf 0
+        let proof = tree.generate_proof(0).expect("Valid index");
+        assert!(crate::merkle::MerkleTree::verify_proof(&proof), "Native verification should pass");
+        
+        // Build circuit with the proof data
+        let merkle_path: Vec<Fr254> = proof.path.iter().map(|p| p.sibling).collect();
+        let indices: Vec<bool> = proof.path.iter().map(|p| p.direction == 1).collect();
+        
+        let circuit = TestMerkleCircuit::new(tree_height)
+            .with_witness(proof.leaf, merkle_path, indices, tree.root);
+        
+        // Run the full pipeline: setup -> prove -> verify
+        let (pk, vk) = generate_setup(circuit.clone(), &mut rng).expect("Setup failed");
+        let proof = generate_proof(circuit, &pk, &mut rng).expect("Proof generation failed");
+        
+        // Verify
+        let is_valid = verify_proof(&vk, &[tree.root], &proof).expect("Verification failed");
+        assert!(is_valid, "Proof should be valid");
+        
+        // Serialize and check size
+        let mut proof_bytes = Vec::new();
+        proof.serialize_compressed(&mut proof_bytes).unwrap();
+        
+        println!("✓ Full proof lifecycle test passed");
+        println!("  Tree height: {}", tree_height);
+        println!("  Proof size: {} bytes", proof_bytes.len());
+    }
+}
