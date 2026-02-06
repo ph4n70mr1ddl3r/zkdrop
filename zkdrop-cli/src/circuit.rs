@@ -19,27 +19,15 @@
 //! - Cons: Relies on Keccak256 security (acceptable for an airdrop)
 
 use ark_bn254::Fr as Fr254;
-use ark_ff::{PrimeField, BigInteger, Field};
 use ark_r1cs_std::{
     alloc::AllocVar,
     boolean::Boolean,
     eq::EqGadget,
     fields::fp::FpVar,
-    R1CSVar,
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
-use crate::poseidon::{poseidon_hash_arity2_circuit, poseidon_hash_arity4_circuit};
-
-/// secp256k1 field modulus (p)
-/// p = 2^256 - 2^32 - 2^9 - 2^8 - 2^7 - 2^6 - 2^4 - 1
-/// = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
-const SECP256K1_P: [u64; 4] = [
-    0xFFFFFFFEFFFFFC2F,
-    0xFFFFFFFFFFFFFFFF,
-    0xFFFFFFFFFFFFFFFF,
-    0xFFFFFFFFFFFFFFFF,
-];
+use crate::poseidon::poseidon_hash_arity4_circuit;
 
 /// Public inputs for the full airdrop circuit
 #[derive(Clone, Debug)]

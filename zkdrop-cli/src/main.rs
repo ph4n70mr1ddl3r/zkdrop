@@ -23,7 +23,7 @@ use zkdrop_cli::{
     merkle::{MerkleTree, MerkleTreeJson},
     poseidon::{address_to_field_element, compute_leaf, compute_nullifier},
     secp256k1::{parse_private_key_hex, parse_address_hex, derive_all_from_private_key},
-    generate_setup, generate_proof,
+    generate_setup, generate_proof, PublicInputs,
 };
 
 /// CLI arguments
@@ -416,37 +416,101 @@ fn generate_merkle_proof_cmd(
 }
 
 /// Verify a proof file
+/// 
+/// NOTE: Full cryptographic verification requires the verifying key and proof
+/// in binary format. The JSON format is for human readability and contract
+/// interaction. For on-chain verification, use the smart contract.
 fn verify_proof_cmd(
     proof_path: PathBuf,
-    _public_inputs_path: PathBuf,
-    verifying_key_path: Option<PathBuf>,
+    public_inputs_path: PathBuf,
+    _verifying_key_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Verifying proof...");
+    println!("Verifying proof format...");
     
-    // Load proof
+    // Load proof file
     let proof_str = fs::read_to_string(&proof_path)
         .map_err(|e| format!("Failed to read proof file: {}", e))?;
     let proof_file: ProofFile = serde_json::from_str(&proof_str)
         .map_err(|e| format!("Invalid proof JSON: {}", e))?;
     
-    println!("  Format: {}", proof_file.format);
-    println!("  Merkle root: {}", proof_file.public_inputs.merkle_root);
-    println!("  Nullifier: {}", proof_file.public_inputs.nullifier);
-    println!("  Recipient: {}", proof_file.public_inputs.recipient);
-    
-    // Check if we have a verifying key to perform full verification
-    if verifying_key_path.is_some() {
-        println!("  Verifying key provided but full verification from JSON format");
-        println!("  is not yet implemented. Use the smart contract for on-chain verification.");
-        println!("  Format validation passed.");
-    } else {
-        println!("⚠️  No verifying key provided - performing format check only");
-        println!("   Use --verifying-key <path> for full cryptographic verification");
-        println!("   (Note: full verification from JSON is not yet implemented)");
+    // Validate format version
+    if proof_file.format != "zkdrop/proof-v1" {
+        return Err(format!("Unsupported proof format: {}", proof_file.format).into());
     }
     
-    println!("\n✓ Proof format is valid");
+    println!("  ✓ Format: {}", proof_file.format);
     
+    // Validate public inputs format
+    let public_inputs_str = fs::read_to_string(&public_inputs_path)
+        .map_err(|e| format!("Failed to read public inputs: {}", e))?;
+    let public_inputs: PublicInputs = serde_json::from_str(&public_inputs_str)
+        .map_err(|e| format!("Invalid public inputs JSON: {}", e))?;
+    
+    // Validate field element formats
+    validate_field_element_hex(&public_inputs.merkle_root, "merkle_root")?;
+    validate_field_element_hex(&public_inputs.nullifier, "nullifier")?;
+    validate_field_element_hex(&public_inputs.recipient, "recipient")?;
+    
+    println!("  ✓ Merkle root: {}", proof_file.public_inputs.merkle_root);
+    println!("  ✓ Nullifier: {}", proof_file.public_inputs.nullifier);
+    println!("  ✓ Recipient: {}", proof_file.public_inputs.recipient);
+    
+    // Validate proof data structure
+    validate_proof_structure(&proof_file.proof)?;
+    
+    println!("\n✓ Proof format is VALID");
+    println!("\nNOTE: Full cryptographic verification requires:");
+    println!("  1. The verifying key (generated during setup)");
+    println!("  2. Proof in binary format");
+    println!("  3. Use the smart contract for on-chain verification");
+    
+    Ok(())
+}
+
+/// Validate that a string is a valid hex-encoded field element
+fn validate_field_element_hex(hex_str: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let hex_clean = hex_str.trim_start_matches("0x");
+    
+    // Check valid hex
+    if hex_clean.chars().any(|c| !c.is_ascii_hexdigit()) {
+        return Err(format!("{} contains invalid hex characters", name).into());
+    }
+    
+    // Check length (should be <= 64 hex chars = 32 bytes for BN254)
+    if hex_clean.len() > 64 {
+        return Err(format!("{} too large for field element", name).into());
+    }
+    
+    Ok(())
+}
+
+/// Validate proof structure
+fn validate_proof_structure(proof: &ProofData) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate A point (G1)
+    validate_g1_point(&proof.a, "a")?;
+    
+    // Validate B point (G2)
+    validate_g2_point(&proof.b, "b")?;
+    
+    // Validate C point (G1)
+    validate_g1_point(&proof.c, "c")?;
+    
+    Ok(())
+}
+
+/// Validate G1 point format [x, y]
+fn validate_g1_point(point: &[String; 2], name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    validate_field_element_hex(&point[0], &format!("{}[0]", name))?;
+    validate_field_element_hex(&point[1], &format!("{}[1]", name))?;
+    Ok(())
+}
+
+/// Validate G2 point format [[x0, x1], [y0, y1]]
+fn validate_g2_point(point: &[[String; 2]; 2], name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    validate_field_element_hex(&point[0][0], &format!("{}[0][0]", name))?;
+    validate_field_element_hex(&point[0][1], &format!("{}[0][1]", name))?;
+    validate_field_element_hex(&point[1][0], &format!("{}[1][0]", name))?;
+    validate_field_element_hex(&point[1][1], &format!("{}[1][1]", name))?;
     Ok(())
 }
 

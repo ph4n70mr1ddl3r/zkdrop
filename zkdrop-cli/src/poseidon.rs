@@ -5,12 +5,9 @@
 //! - Nullifier (arity 4): bn254-arity4-rf8-rp57-v1
 
 use ark_bn254::Fr as Fr254;
-use ark_crypto_primitives::sponge::{
-    poseidon::{PoseidonConfig, PoseidonSponge},
-    CryptographicSponge,
-};
+use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
 use ark_ff::{BigInteger, PrimeField};
-use ark_r1cs_std::fields::{fp::FpVar, FieldVar};
+use ark_r1cs_std::fields::fp::FpVar;
 use ark_relations::r1cs::SynthesisError;
 use std::sync::OnceLock;
 
@@ -201,7 +198,7 @@ pub fn poseidon_hash_arity2_circuit(
 pub fn poseidon_hash_arity4_circuit(
     inputs: [&FpVar<Fr254>; 4],
 ) -> Result<FpVar<Fr254>, SynthesisError> {
-    let mut sum = FpVar::constant(Fr254::from(0u64));
+    let mut sum = FpVar::Constant(Fr254::from(0u64));
     
     for input in inputs.iter() {
         let x2 = (*input) * (*input);
