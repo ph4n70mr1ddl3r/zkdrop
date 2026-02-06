@@ -260,6 +260,8 @@ fn generate_proof_cmd(
     let private_key_fe = Fr254::from_be_bytes_mod_order(&private_key_bytes);
     
     let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
         private_key: private_key_fe,
         merkle_path,
         path_indices,

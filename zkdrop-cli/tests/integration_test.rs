@@ -202,13 +202,15 @@ fn test_end_to_end_claim_flow() {
     
     let private_key_fe = Fr254::from_be_bytes_mod_order(&user_private_key);
     
-    let private_inputs = AirdropPrivateInputs {
-        private_key: private_key_fe,
+    let private_inputs = AirdropPrivateInputs::new(
+        private_key_fe,
         merkle_path,
         path_indices,
-        pk_x: pk_x_fe,
-        pk_y: pk_y_fe,
-    };
+        pk_x_fe,
+        pk_y_fe,
+        pk_x_bytes,
+        pk_y_bytes,
+    );
     
     println!("  Public inputs:");
     println!("    Merkle root: 0x{}", hex::encode(merkle_root.into_bigint().to_bytes_be()));
@@ -397,13 +399,15 @@ fn test_proof_fails_with_wrong_nullifier() {
     
     let private_key_fe = Fr254::from_be_bytes_mod_order(&user_private_key);
     
-    let private_inputs = AirdropPrivateInputs {
-        private_key: private_key_fe,
+    let private_inputs = AirdropPrivateInputs::new(
+        private_key_fe,
         merkle_path,
         path_indices,
-        pk_x: pk_x_fe,
-        pk_y: pk_y_fe,
-    };
+        pk_x_fe,
+        pk_y_fe,
+        pk_x_bytes,
+        pk_y_bytes,
+    );
     
     let circuit = AirdropClaimCircuit::new(tree.height(), chain_id)
         .with_witness(public_inputs.clone(), private_inputs);
@@ -458,13 +462,13 @@ fn test_constraint_scaling() {
             recipient,
         };
         
-        let private_inputs = AirdropPrivateInputs {
+        let private_inputs = AirdropPrivateInputs::new_without_bytes(
             private_key,
             merkle_path,
             path_indices,
             pk_x,
             pk_y,
-        };
+        );
         
         let circuit = AirdropClaimCircuit::new(height, 8453u64)
             .with_witness(public_inputs, private_inputs);
@@ -651,13 +655,13 @@ fn test_full_circuit_with_real_merkle_proof() {
         recipient: Fr254::from(0xdeadbeefu64),
     };
     
-    let private_inputs = AirdropPrivateInputs {
-        private_key: Fr254::from(42u64),
+    let private_inputs = AirdropPrivateInputs::new_without_bytes(
+        Fr254::from(42u64),
         merkle_path,
         path_indices,
         pk_x,
         pk_y,
-    };
+    );
     
     // Build and test circuit
     let circuit = AirdropClaimCircuit::new(tree_height, chain_id)
@@ -757,13 +761,15 @@ fn test_full_circuit_with_derived_keys() {
         recipient: Fr254::from(0xdeadbeefu64),
     };
     
-    let private_inputs = AirdropPrivateInputs {
-        private_key: Fr254::from_be_bytes_mod_order(&user_private_key),
+    let private_inputs = AirdropPrivateInputs::new(
+        Fr254::from_be_bytes_mod_order(&user_private_key),
         merkle_path,
         path_indices,
-        pk_x: pk_x_fe,
-        pk_y: pk_y_fe,
-    };
+        pk_x_fe,
+        pk_y_fe,
+        pk_x_bytes,
+        pk_y_bytes,
+    );
     
     // Build and test circuit
     let circuit = AirdropClaimCircuit::new(tree_height, chain_id)

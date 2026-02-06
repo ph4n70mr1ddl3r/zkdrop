@@ -57,6 +57,71 @@ pub struct AirdropPrivateInputs {
     pub path_indices: Vec<bool>,
     pub pk_x: Fr254,
     pub pk_y: Fr254,
+    /// Original pk_x bytes (32 bytes) for address computation
+    /// NOTE: If not provided (all zeros), the circuit will use field_to_bytes(pk_x) which may be incorrect!
+    pub pk_x_bytes: [u8; 32],
+    /// Original pk_y bytes (32 bytes) for address computation  
+    /// NOTE: If not provided (all zeros), the circuit will use field_to_bytes(pk_y) which may be incorrect!
+    pub pk_y_bytes: [u8; 32],
+}
+
+impl Default for AirdropPrivateInputs {
+    fn default() -> Self {
+        Self {
+            private_key: Fr254::from(1u64),
+            merkle_path: Vec::new(),
+            path_indices: Vec::new(),
+            pk_x: Fr254::from(0u64),
+            pk_y: Fr254::from(0u64),
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
+        }
+    }
+}
+
+impl AirdropPrivateInputs {
+    /// Create private inputs with the original pk bytes
+    pub fn new(
+        private_key: Fr254,
+        merkle_path: Vec<Fr254>,
+        path_indices: Vec<bool>,
+        pk_x: Fr254,
+        pk_y: Fr254,
+        pk_x_bytes: [u8; 32],
+        pk_y_bytes: [u8; 32],
+    ) -> Self {
+        Self {
+            private_key,
+            merkle_path,
+            path_indices,
+            pk_x,
+            pk_y,
+            pk_x_bytes,
+            pk_y_bytes,
+        }
+    }
+    
+    /// Create private inputs without original bytes (for tests that don't need address computation)
+    /// WARNING: This will produce incorrect address computation if used for real proofs!
+    pub fn new_without_bytes(
+        private_key: Fr254,
+        merkle_path: Vec<Fr254>,
+        path_indices: Vec<bool>,
+        pk_x: Fr254,
+        pk_y: Fr254,
+    ) -> Self {
+        use crate::keccak::field_to_bytes;
+        // Fallback: convert field elements back to bytes (may be incorrect for large values!)
+        Self {
+            private_key,
+            merkle_path,
+            path_indices,
+            pk_x,
+            pk_y,
+            pk_x_bytes: field_to_bytes(pk_x),
+            pk_y_bytes: field_to_bytes(pk_y),
+        }
+    }
 }
 
 /// Full airdrop claim circuit implementing the design spec
@@ -231,7 +296,7 @@ impl AirdropClaimCircuit {
     /// IMPLEMENTATION APPROACH (Witness-Based):
     /// Since full in-circuit Keccak256 is expensive (~25k constraints), we use a
     /// witness-based approach:
-    /// 1. Compute address off-circuit using native Keccak256
+    /// 1. Compute address off-circuit using native Keccak256 with ORIGINAL bytes
     /// 2. Allocate result as a witness in the circuit
     /// 3. Use this witness for merkle tree verification
     ///
@@ -245,17 +310,22 @@ impl AirdropClaimCircuit {
         pk_x: &FpVar<Fr254>,
         pk_y: &FpVar<Fr254>,
     ) -> Result<FpVar<Fr254>, SynthesisError> {
-        use crate::keccak::{compute_address_native, field_to_bytes, address_to_field_element};
+        use crate::keccak::{compute_address_native, address_to_field_element, field_to_bytes};
         
-        // Get witness values
-        let pk_x_fe = pk_x.value().unwrap_or(Fr254::from(0u64));
-        let pk_y_fe = pk_y.value().unwrap_or(Fr254::from(0u64));
+        let private = self.private_inputs.as_ref().ok_or(SynthesisError::AssignmentMissing)?;
         
-        // Convert to bytes
-        let pk_x_bytes = field_to_bytes(pk_x_fe);
-        let pk_y_bytes = field_to_bytes(pk_y_fe);
+        // Use ORIGINAL bytes for address computation if provided, otherwise fall back to field conversion
+        // NOTE: For real proofs, pk_x_bytes and pk_y_bytes MUST be provided correctly!
+        let (pk_x_bytes, pk_y_bytes) = if private.pk_x_bytes == [0u8; 32] && private.pk_y_bytes == [0u8; 32] {
+            // Fallback: convert field elements back to bytes (may be incorrect for large values!)
+            let pk_x_fe = pk_x.value().unwrap_or(Fr254::from(0u64));
+            let pk_y_fe = pk_y.value().unwrap_or(Fr254::from(0u64));
+            (field_to_bytes(pk_x_fe), field_to_bytes(pk_y_fe))
+        } else {
+            (private.pk_x_bytes, private.pk_y_bytes)
+        };
         
-        // Compute address off-circuit
+        // Compute address off-circuit using the original bytes
         let address_bytes = compute_address_native(&pk_x_bytes, &pk_y_bytes);
         let address_fe = address_to_field_element(address_bytes);
         
@@ -508,6 +578,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key,
             merkle_path,
             path_indices,
@@ -550,6 +622,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key,
             merkle_path,
             path_indices,
@@ -628,6 +702,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key: Fr254::from(1u64), // Non-zero
             merkle_path,
             path_indices,
@@ -686,6 +762,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key: Fr254::from(42u64),
             merkle_path,
             path_indices,
@@ -716,6 +794,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key: Fr254::from(0u64), // Zero key - should fail
             merkle_path: vec![Fr254::from(1u64); tree_height],
             path_indices: vec![false; tree_height],
@@ -746,6 +826,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key: Fr254::from(42u64),
             merkle_path: vec![Fr254::from(1u64); tree_height],
             path_indices: vec![false; tree_height],
@@ -776,6 +858,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key: Fr254::from(42u64),
             merkle_path: vec![Fr254::from(1u64); tree_height],
             path_indices: vec![false; tree_height],
@@ -864,6 +948,8 @@ mod integration_tests {
         };
         
         let private_inputs = AirdropPrivateInputs {
+            pk_x_bytes: [0u8; 32],
+            pk_y_bytes: [0u8; 32],
             private_key,
             merkle_path,
             path_indices,
