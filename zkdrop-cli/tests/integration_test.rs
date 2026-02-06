@@ -671,8 +671,8 @@ fn test_full_circuit_with_real_merkle_proof() {
         recipient: Fr254::from(0xdeadbeefu64),
     };
     
-    // Use address at index 0 for this test
-    let address_fe = address_to_field_element(addresses[0]);
+    // Use the correct address for the claimed index
+    let address_fe = address_to_field_element(claim_address);
     
     let private_inputs = AirdropPrivateInputs::new(
         Fr254::from(42u64),
