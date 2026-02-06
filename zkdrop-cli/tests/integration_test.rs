@@ -202,14 +202,17 @@ fn test_end_to_end_claim_flow() {
     
     let private_key_fe = Fr254::from_be_bytes_mod_order(&user_private_key);
     
+    // Compute address from original bytes
+    let address = compute_address_native(&pk_x_bytes, &pk_y_bytes);
+    let address_fe = address_to_field_element(address);
+    
     let private_inputs = AirdropPrivateInputs::new(
         private_key_fe,
         merkle_path,
         path_indices,
         pk_x_fe,
         pk_y_fe,
-        pk_x_bytes,
-        pk_y_bytes,
+        address_fe,
     );
     
     println!("  Public inputs:");
@@ -226,8 +229,7 @@ fn test_end_to_end_claim_flow() {
     let circuit = AirdropClaimCircuit::new(tree.height(), chain_id)
         .with_witness(public_inputs.clone(), private_inputs);
     
-    // Test constraint synthesis (for information only - may not be satisfied due to
-    // witness consistency issues in the test setup)
+    // Test constraint synthesis
     let cs = ark_relations::r1cs::ConstraintSystem::new_ref();
     match circuit.clone().generate_constraints(cs.clone()) {
         Ok(_) => {
@@ -236,11 +238,21 @@ fn test_end_to_end_claim_flow() {
             
             println!("  Constraints: {}", num_constraints);
             println!("  Estimated: {}", estimated_constraints);
-            println!("  ✓ Circuit synthesized\n");
+            
+            // Check if constraints are satisfied
+            match cs.is_satisfied() {
+                Ok(true) => println!("  ✓ All constraints satisfied\n"),
+                Ok(false) => {
+                    if let Ok(Some(unsat)) = cs.which_is_unsatisfied() {
+                        println!("  ✗ Constraint {} not satisfied\n", unsat);
+                    }
+                    panic!("Constraints not satisfied before proof generation");
+                }
+                Err(e) => panic!("Error checking satisfaction: {:?}", e),
+            }
         }
         Err(e) => {
-            println!("  Note: Constraint synthesis issue: {:?}", e);
-            println!("  Continuing with proof generation...\n");
+            panic!("Constraint synthesis failed: {:?}", e);
         }
     }
     
@@ -399,14 +411,17 @@ fn test_proof_fails_with_wrong_nullifier() {
     
     let private_key_fe = Fr254::from_be_bytes_mod_order(&user_private_key);
     
+    // Compute address from original bytes
+    let address = compute_address_native(&pk_x_bytes, &pk_y_bytes);
+    let address_fe = address_to_field_element(address);
+    
     let private_inputs = AirdropPrivateInputs::new(
         private_key_fe,
         merkle_path,
         path_indices,
         pk_x_fe,
         pk_y_fe,
-        pk_x_bytes,
-        pk_y_bytes,
+        address_fe,
     );
     
     let circuit = AirdropClaimCircuit::new(tree.height(), chain_id)
@@ -462,12 +477,13 @@ fn test_constraint_scaling() {
             recipient,
         };
         
-        let private_inputs = AirdropPrivateInputs::new_without_bytes(
+        let private_inputs = AirdropPrivateInputs::new(
             private_key,
             merkle_path,
             path_indices,
             pk_x,
             pk_y,
+            Fr254::from(0u64), // dummy address for constraint scaling test
         );
         
         let circuit = AirdropClaimCircuit::new(height, 8453u64)
@@ -655,12 +671,16 @@ fn test_full_circuit_with_real_merkle_proof() {
         recipient: Fr254::from(0xdeadbeefu64),
     };
     
-    let private_inputs = AirdropPrivateInputs::new_without_bytes(
+    // Use address at index 0 for this test
+    let address_fe = address_to_field_element(addresses[0]);
+    
+    let private_inputs = AirdropPrivateInputs::new(
         Fr254::from(42u64),
         merkle_path,
         path_indices,
         pk_x,
         pk_y,
+        address_fe,
     );
     
     // Build and test circuit
@@ -761,14 +781,17 @@ fn test_full_circuit_with_derived_keys() {
         recipient: Fr254::from(0xdeadbeefu64),
     };
     
+    // Compute address from original bytes
+    let address = compute_address_native(&pk_x_bytes, &pk_y_bytes);
+    let address_fe = address_to_field_element(address);
+    
     let private_inputs = AirdropPrivateInputs::new(
         Fr254::from_be_bytes_mod_order(&user_private_key),
         merkle_path,
         path_indices,
         pk_x_fe,
         pk_y_fe,
-        pk_x_bytes,
-        pk_y_bytes,
+        address_fe,
     );
     
     // Build and test circuit

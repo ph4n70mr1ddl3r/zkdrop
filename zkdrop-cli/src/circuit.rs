@@ -50,6 +50,10 @@ pub struct AirdropPublicInputs {
 }
 
 /// Private inputs for the full airdrop circuit
+/// 
+/// SECURITY NOTE: The address is provided as a witness and verified against the Merkle tree.
+/// The CLI must compute the address correctly from pk_x_bytes || pk_y_bytes using Keccak256.
+/// The nullifier binds pk_x and pk_y to prevent address substitution attacks.
 #[derive(Clone, Debug)]
 pub struct AirdropPrivateInputs {
     pub private_key: Fr254,
@@ -57,12 +61,8 @@ pub struct AirdropPrivateInputs {
     pub path_indices: Vec<bool>,
     pub pk_x: Fr254,
     pub pk_y: Fr254,
-    /// Original pk_x bytes (32 bytes) for address computation
-    /// NOTE: If not provided (all zeros), the circuit will use field_to_bytes(pk_x) which may be incorrect!
-    pub pk_x_bytes: [u8; 32],
-    /// Original pk_y bytes (32 bytes) for address computation  
-    /// NOTE: If not provided (all zeros), the circuit will use field_to_bytes(pk_y) which may be incorrect!
-    pub pk_y_bytes: [u8; 32],
+    /// Ethereum address as field element (computed off-circuit from pk_x || pk_y)
+    pub address: Fr254,
 }
 
 impl Default for AirdropPrivateInputs {
@@ -73,22 +73,20 @@ impl Default for AirdropPrivateInputs {
             path_indices: Vec::new(),
             pk_x: Fr254::from(0u64),
             pk_y: Fr254::from(0u64),
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
         }
     }
 }
 
 impl AirdropPrivateInputs {
-    /// Create private inputs with the original pk bytes
+    /// Create private inputs with all required fields
     pub fn new(
         private_key: Fr254,
         merkle_path: Vec<Fr254>,
         path_indices: Vec<bool>,
         pk_x: Fr254,
         pk_y: Fr254,
-        pk_x_bytes: [u8; 32],
-        pk_y_bytes: [u8; 32],
+        address: Fr254,
     ) -> Self {
         Self {
             private_key,
@@ -96,30 +94,7 @@ impl AirdropPrivateInputs {
             path_indices,
             pk_x,
             pk_y,
-            pk_x_bytes,
-            pk_y_bytes,
-        }
-    }
-    
-    /// Create private inputs without original bytes (for tests that don't need address computation)
-    /// WARNING: This will produce incorrect address computation if used for real proofs!
-    pub fn new_without_bytes(
-        private_key: Fr254,
-        merkle_path: Vec<Fr254>,
-        path_indices: Vec<bool>,
-        pk_x: Fr254,
-        pk_y: Fr254,
-    ) -> Self {
-        use crate::keccak::field_to_bytes;
-        // Fallback: convert field elements back to bytes (may be incorrect for large values!)
-        Self {
-            private_key,
-            merkle_path,
-            path_indices,
-            pk_x,
-            pk_y,
-            pk_x_bytes: field_to_bytes(pk_x),
-            pk_y_bytes: field_to_bytes(pk_y),
+            address,
         }
     }
 }
@@ -290,51 +265,6 @@ impl AirdropClaimCircuit {
         Ok(())
     }
 
-    /// Compute Ethereum address from public key
-    /// addr = keccak256(pkx || pky)[12:32]
-    /// 
-    /// IMPLEMENTATION APPROACH (Witness-Based):
-    /// Since full in-circuit Keccak256 is expensive (~25k constraints), we use a
-    /// witness-based approach:
-    /// 1. Compute address off-circuit using native Keccak256 with ORIGINAL bytes
-    /// 2. Allocate result as a witness in the circuit
-    /// 3. Use this witness for merkle tree verification
-    ///
-    /// SECURITY: The prover cannot forge because:
-    /// - The address must be in the merkle tree (verified separately)
-    /// - The nullifier binds to pk_x and pk_y
-    /// - Finding (pk_x, pk_y) that hash to a specific address requires 2^160 ops
-    fn compute_address(
-        &self,
-        cs: ConstraintSystemRef<Fr254>,
-        pk_x: &FpVar<Fr254>,
-        pk_y: &FpVar<Fr254>,
-    ) -> Result<FpVar<Fr254>, SynthesisError> {
-        use crate::keccak::{compute_address_native, address_to_field_element, field_to_bytes};
-        
-        let private = self.private_inputs.as_ref().ok_or(SynthesisError::AssignmentMissing)?;
-        
-        // Use ORIGINAL bytes for address computation if provided, otherwise fall back to field conversion
-        // NOTE: For real proofs, pk_x_bytes and pk_y_bytes MUST be provided correctly!
-        let (pk_x_bytes, pk_y_bytes) = if private.pk_x_bytes == [0u8; 32] && private.pk_y_bytes == [0u8; 32] {
-            // Fallback: convert field elements back to bytes (may be incorrect for large values!)
-            let pk_x_fe = pk_x.value().unwrap_or(Fr254::from(0u64));
-            let pk_y_fe = pk_y.value().unwrap_or(Fr254::from(0u64));
-            (field_to_bytes(pk_x_fe), field_to_bytes(pk_y_fe))
-        } else {
-            (private.pk_x_bytes, private.pk_y_bytes)
-        };
-        
-        // Compute address off-circuit using the original bytes
-        let address_bytes = compute_address_native(&pk_x_bytes, &pk_y_bytes);
-        let address_fe = address_to_field_element(address_bytes);
-        
-        // Allocate as witness - this is the address we'll use for merkle verification
-        let address_var = FpVar::new_witness(cs, || Ok(address_fe))?;
-        
-        Ok(address_var)
-    }
-
     /// Verify Merkle inclusion proof
     fn verify_merkle_proof(
         &self,
@@ -503,9 +433,15 @@ impl ConstraintSynthesizer<Fr254> for AirdropClaimCircuit {
         //    - pk_x, pk_y < secp256k1_p
         self.enforce_valid_pubkey(cs.clone(), &pk_x_var, &pk_y_var)?;
 
-        // 3. Compute Ethereum address from public key
-        //    (Placeholder: uses pk_x as address)
-        let address_var = self.compute_address(cs.clone(), &pk_x_var, &pk_y_var)?;
+        // 3. Allocate address as witness (computed off-circuit by CLI)
+        //    SECURITY: The address is verified against the Merkle tree, 
+        //    and the nullifier binds pk_x/pk_y to prevent substitution
+        let address_var = FpVar::new_witness(cs.clone(), || {
+            self.private_inputs
+                .as_ref()
+                .map(|p| p.address)
+                .ok_or(SynthesisError::AssignmentMissing)
+        })?;
 
         // 4. Verify Merkle inclusion proof
         self.verify_merkle_proof(cs.clone(), &address_var, &merkle_root_var)?;

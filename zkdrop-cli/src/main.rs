@@ -259,15 +259,14 @@ fn generate_proof_cmd(
     
     let private_key_fe = Fr254::from_be_bytes_mod_order(&private_key_bytes);
     
-    let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
-        private_key: private_key_fe,
+    let private_inputs = AirdropPrivateInputs::new(
+        private_key_fe,
         merkle_path,
         path_indices,
-        pk_x: derived.pkx_fe,
-        pk_y: derived.pky_fe,
-    };
+        derived.pkx_fe,
+        derived.pky_fe,
+        derived.addr_fe,
+    );
     
     // Create circuit
     let circuit = AirdropClaimCircuit::new(tree_height, chain_id)
