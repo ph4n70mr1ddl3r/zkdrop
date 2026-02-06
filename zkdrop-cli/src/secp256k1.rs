@@ -8,7 +8,8 @@
 use ark_bn254::Fr as Fr254;
 use ark_ff::{BigInteger, PrimeField};
 use secp256k1::{PublicKey, SecretKey};
-use sha3::{Keccak256, Digest};
+
+use crate::keccak::compute_address_native;
 
 /// secp256k1 curve order (for reference)
 pub const SECP256K1_N: [u8; 32] = [
@@ -70,15 +71,14 @@ pub fn pubkey_to_field_elements(
 /// 
 /// address = keccak256(pkx || pky)[12:32]
 pub fn compute_ethereum_address(pubkey_bytes: &[u8; 64]) -> [u8; 20] {
-    let mut hasher = Keccak256::new();
-    hasher.update(pubkey_bytes);
-    let hash = hasher.finalize();
+    // Extract x and y coordinates
+    let mut pk_x = [0u8; 32];
+    let mut pk_y = [0u8; 32];
+    pk_x.copy_from_slice(&pubkey_bytes[0..32]);
+    pk_y.copy_from_slice(&pubkey_bytes[32..64]);
     
-    // Take last 20 bytes
-    let mut address = [0u8; 20];
-    address.copy_from_slice(&hash[12..32]);
-    
-    address
+    // Use the keccak module for consistency
+    compute_address_native(&pk_x, &pk_y)
 }
 
 /// Compute Ethereum address from private key

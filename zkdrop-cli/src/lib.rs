@@ -14,6 +14,7 @@ use ark_std::rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 pub mod circuit;
+pub mod keccak;
 pub mod merkle;
 pub mod poseidon;
 pub mod secp256k1;
