@@ -181,6 +181,7 @@ fn measure_proving_time(tree_height: usize) -> ProvingTimeResult {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key,
         merkle_path: path.clone(),
         path_indices: path_indices.clone(),
@@ -209,6 +210,7 @@ fn measure_proving_time(tree_height: usize) -> ProvingTimeResult {
         // Recreate circuit for each run
         let circuit_run = AirdropClaimCircuit::new(tree_height, chain_id)
             .with_witness(public_inputs.clone(), AirdropPrivateInputs {
+                    address: Fr254::from(0u64),
                 private_key: Fr254::from(42u64),
                 merkle_path: path.clone(),
                 path_indices: path_indices.clone(),
@@ -363,6 +365,7 @@ fn test_proof_generation_smoke() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(42u64),
         merkle_path: path,
         path_indices,
@@ -436,6 +439,7 @@ fn test_verification_fails_wrong_nullifier() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(42u64),
         merkle_path: path.clone(),
         path_indices: path_indices.clone(),
@@ -484,6 +488,7 @@ fn test_verification_fails_wrong_recipient() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(42u64),
         merkle_path: path.clone(),
         path_indices: path_indices.clone(),
@@ -531,6 +536,7 @@ fn test_verification_fails_wrong_merkle_root() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(42u64),
         merkle_path: path.clone(),
         path_indices: path_indices.clone(),
@@ -579,6 +585,7 @@ fn test_circuit_fails_zero_private_key() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(0u64), // ZERO - should fail
         merkle_path: path,
         path_indices,
@@ -623,6 +630,7 @@ fn test_circuit_fails_invalid_merkle_path() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(42u64),
         merkle_path: wrong_path,
         path_indices,
@@ -669,6 +677,7 @@ fn test_circuit_fails_wrong_nullifier_computation() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(42u64),
         merkle_path: path,
         path_indices,
@@ -887,6 +896,7 @@ fn test_proof_serialization_consistency() {
     };
     
     let private_inputs = AirdropPrivateInputs {
+            address: Fr254::from(0u64),
         private_key: Fr254::from(42u64),
         merkle_path: path,
         path_indices,

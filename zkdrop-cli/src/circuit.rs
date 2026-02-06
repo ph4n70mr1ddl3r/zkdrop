@@ -514,8 +514,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key,
             merkle_path,
             path_indices,
@@ -558,8 +558,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key,
             merkle_path,
             path_indices,
@@ -638,8 +638,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key: Fr254::from(1u64), // Non-zero
             merkle_path,
             path_indices,
@@ -698,8 +698,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key: Fr254::from(42u64),
             merkle_path,
             path_indices,
@@ -730,8 +730,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key: Fr254::from(0u64), // Zero key - should fail
             merkle_path: vec![Fr254::from(1u64); tree_height],
             path_indices: vec![false; tree_height],
@@ -762,8 +762,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key: Fr254::from(42u64),
             merkle_path: vec![Fr254::from(1u64); tree_height],
             path_indices: vec![false; tree_height],
@@ -794,8 +794,8 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key: Fr254::from(42u64),
             merkle_path: vec![Fr254::from(1u64); tree_height],
             path_indices: vec![false; tree_height],
@@ -884,8 +884,8 @@ mod integration_tests {
         };
         
         let private_inputs = AirdropPrivateInputs {
-            pk_x_bytes: [0u8; 32],
-            pk_y_bytes: [0u8; 32],
+            address: Fr254::from(0u64),
+            
             private_key,
             merkle_path,
             path_indices,
