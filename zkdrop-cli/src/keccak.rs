@@ -28,7 +28,7 @@ pub fn compute_address_native(pk_x: &[u8; 32], pk_y: &[u8; 32]) -> [u8; 20] {
     
     // Compute Keccak256 hash
     let mut hasher = Keccak256::new();
-    hasher.update(&pubkey_bytes);
+    hasher.update(pubkey_bytes);
     let hash = hasher.finalize();
     
     // Extract last 20 bytes as address

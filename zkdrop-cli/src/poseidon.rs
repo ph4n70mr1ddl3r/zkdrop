@@ -5,9 +5,12 @@
 //! - Nullifier (arity 4): bn254-arity4-rf8-rp57-v1
 
 use ark_bn254::Fr as Fr254;
-use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
+use ark_crypto_primitives::sponge::{
+    poseidon::{PoseidonConfig, PoseidonSponge},
+    CryptographicSponge,
+};
 use ark_ff::{BigInteger, PrimeField};
-use ark_r1cs_std::fields::fp::FpVar;
+use ark_r1cs_std::{fields::fp::FpVar, R1CSVar};
 use ark_relations::r1cs::SynthesisError;
 use std::sync::OnceLock;
 
@@ -39,7 +42,7 @@ pub fn reduce_to_field(bytes: &[u8; 32]) -> Fr254 {
 
 /// Generate Poseidon parameters for BN254
 /// 
-/// Parameters:
+/// Parameters match the design spec:
 /// - Rate: 2 (for arity 2) or 4 (for arity 4)
 /// - Capacity: 1
 /// - Full rounds: 8
@@ -87,47 +90,28 @@ fn get_poseidon_params_arity4() -> &'static PoseidonConfig<Fr254> {
 /// 
 /// Uses proper bn254-arity2-rf8-rp57-v1 parameters
 /// 
-/// NOTE: Currently uses simplified hash for consistency with circuit.
-/// TODO: Replace with full Poseidon gadget in circuit for production.
+/// SECURITY: This is a full Poseidon implementation using ark-crypto-primitives.
+/// It is NOT commutative: H(a,b) != H(b,a), which is essential for Merkle tree security.
 pub fn poseidon_hash_arity2(left: Fr254, right: Fr254) -> Fr254 {
-    // Simplified implementation matching the circuit
-    // H(left, right) = left^5 + right^5 + left * right
-    use ark_ff::Field;
-    let left_5 = left.pow([5u64]);
-    let right_5 = right.pow([5u64]);
-    left_5 + right_5 + left * right
-    
-    // Full Poseidon implementation (when circuit is updated):
-    // let config = get_poseidon_params_arity2();
-    // let mut sponge = PoseidonSponge::new(config);
-    // sponge.absorb(&left);
-    // sponge.absorb(&right);
-    // sponge.squeeze_field_elements(1)[0]
+    let config = get_poseidon_params_arity2();
+    let mut sponge = PoseidonSponge::new(config);
+    sponge.absorb(&left);
+    sponge.absorb(&right);
+    sponge.squeeze_field_elements(1)[0]
 }
 
 /// Poseidon hash with arity 4 (for nullifier computation)
 /// 
 /// Uses proper bn254-arity4-rf8-rp57-v1 parameters
 /// 
-/// NOTE: Currently uses simplified hash for consistency with circuit.
-/// TODO: Replace with full Poseidon gadget in circuit for production.
+/// SECURITY: Full Poseidon implementation with proper non-commutative properties.
 pub fn poseidon_hash_arity4(inputs: [Fr254; 4]) -> Fr254 {
-    // Simplified implementation matching the circuit
-    // H(a,b,c,d) = a^5 + b^5 + c^5 + d^5 + a*b + c*d
-    use ark_ff::Field;
-    let mut result = Fr254::from(0u64);
-    for x in inputs {
-        result += x.pow([5u64]);
+    let config = get_poseidon_params_arity4();
+    let mut sponge = PoseidonSponge::new(config);
+    for input in inputs.iter() {
+        sponge.absorb(input);
     }
-    result + inputs[0] * inputs[1] + inputs[2] * inputs[3]
-    
-    // Full Poseidon implementation (when circuit is updated):
-    // let config = get_poseidon_params_arity4();
-    // let mut sponge = PoseidonSponge::new(config);
-    // for input in inputs.iter() {
-    //     sponge.absorb(input);
-    // }
-    // sponge.squeeze_field_elements(1)[0]
+    sponge.squeeze_field_elements(1)[0]
 }
 
 /// Compute nullifier: H(chainId, merkleRoot, pkx_fe, pky_fe)
@@ -165,51 +149,75 @@ pub fn field_element_to_bytes(fe: Fr254) -> [u8; 32] {
     })
 }
 
+/// Check if a field element is a valid 160-bit value (i.e., < 2^160)
+/// 
+/// This is used to validate Ethereum addresses as field elements.
+/// An Ethereum address is 20 bytes = 160 bits.
+pub fn is_valid_160_bit_value(fe: Fr254) -> bool {
+    let bytes = field_element_to_bytes(fe);
+    
+    // Check that bytes 0-11 (the first 12 bytes) are all zero
+    // This ensures the value is < 2^160 (since 256 - 12*8 = 160)
+    bytes[0..12].iter().all(|&b| b == 0)
+}
+
 /// In-circuit Poseidon hash for arity 2
 /// 
-/// This uses the constraint system to implement Poseidon hashing.
-/// For production, consider using ark-crypto-primitives' in-circuit Poseidon gadget
-/// which is more efficient but requires additional setup.
+/// This implements the full Poseidon hash in the constraint system.
+/// For production use, this ensures consistency with the native implementation.
+/// 
+/// NOTE: This uses the constraint system to implement Poseidon hashing.
+/// The implementation follows the ark-crypto-primitives Poseidon specification.
 pub fn poseidon_hash_arity2_circuit(
     left: &FpVar<Fr254>,
     right: &FpVar<Fr254>,
 ) -> Result<FpVar<Fr254>, SynthesisError> {
-    // For now, we use a simplified implementation that matches the native hash
-    // In production, use the full Poseidon gadget from ark-crypto-primitives
-    // which implements the full 8 full rounds + 57 partial rounds
+    // Use the in-circuit Poseidon implementation from ark-crypto-primitives
+    use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
+    use ark_crypto_primitives::sponge::poseidon::constraints::PoseidonSpongeVar;
     
-    // Simplified: H(left, right) = left^5 + right^5 + left * right
-    // This maintains consistency with the native implementation for testing
-    // TODO: Replace with full Poseidon gadget for production
-    let left_2 = left * left;
-    let left_4 = &left_2 * &left_2;
-    let left_5 = &left_4 * left;
+    let config = get_poseidon_params_arity2();
     
-    let right_2 = right * right;
-    let right_4 = &right_2 * &right_2;
-    let right_5 = &right_4 * right;
+    // Create Poseidon sponge variable
+    let mut sponge = PoseidonSpongeVar::new(
+        left.cs().clone(),
+        config,
+    );
     
-    Ok(left_5 + right_5 + left * right)
+    // Absorb inputs
+    sponge.absorb(left)?;
+    sponge.absorb(right)?;
+    
+    // Squeeze output
+    let result = sponge.squeeze_field_elements(1)?;
+    Ok(result[0].clone())
 }
 
 /// In-circuit Poseidon hash for arity 4
 /// 
-/// Note: This is a simplified version. For production, use full Poseidon gadget.
+/// Full Poseidon implementation in circuit for nullifier computation.
 pub fn poseidon_hash_arity4_circuit(
     inputs: [&FpVar<Fr254>; 4],
 ) -> Result<FpVar<Fr254>, SynthesisError> {
-    let mut sum = FpVar::Constant(Fr254::from(0u64));
+    use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
+    use ark_crypto_primitives::sponge::poseidon::constraints::PoseidonSpongeVar;
     
+    let config = get_poseidon_params_arity4();
+    
+    // Create Poseidon sponge variable
+    let mut sponge = PoseidonSpongeVar::new(
+        inputs[0].cs().clone(),
+        config,
+    );
+    
+    // Absorb all inputs
     for input in inputs.iter() {
-        let x2 = (*input) * (*input);
-        let x4 = &x2 * &x2;
-        let x5 = &x4 * (*input);
-        sum = &sum + &x5;
+        sponge.absorb(*input)?;
     }
     
-    // Add mixed terms
-    let mixed = inputs[0] * inputs[1] + inputs[2] * inputs[3];
-    Ok(sum + mixed)
+    // Squeeze output
+    let result = sponge.squeeze_field_elements(1)?;
+    Ok(result[0].clone())
 }
 
 #[cfg(test)]
@@ -217,6 +225,7 @@ mod tests {
     use super::*;
     use ark_ff::Zero;
 
+    // Test that Poseidon params can be generated
     #[test]
     fn test_poseidon_params_generation() {
         // Test that params can be generated
@@ -252,6 +261,21 @@ mod tests {
         let hash_ac = poseidon_hash_arity2(a, c);
         
         assert_ne!(hash_ab, hash_ac, "Different inputs should produce different hashes");
+    }
+
+    #[test]
+    fn test_poseidon_arity2_non_commutative() {
+        // CRITICAL SECURITY TEST: Poseidon must NOT be commutative
+        // H(a,b) != H(b,a) for a proper hash function used in Merkle trees
+        let a = Fr254::from(123456789u64);
+        let b = Fr254::from(987654321u64);
+        
+        let hash_ab = poseidon_hash_arity2(a, b);
+        let hash_ba = poseidon_hash_arity2(b, a);
+        
+        assert_ne!(hash_ab, hash_ba, 
+            "Poseidon MUST NOT be commutative for Merkle tree security. \
+             If this fails, the hash function is broken and allows tree manipulation.");
     }
 
     #[test]
@@ -332,19 +356,26 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Simplified hash is commutative - needs full Poseidon implementation"]
-    fn test_poseidon_arity2_commutative_check() {
-        // Poseidon should NOT be commutative (H(a,b) != H(b,a))
-        // Note: The simplified hash H(a,b) = a^5 + b^5 + a*b IS commutative
-        // This test is ignored until full Poseidon is implemented
-        let a = Fr254::from(123456789u64);
-        let b = Fr254::from(987654321u64);
+    fn test_is_valid_160_bit_value() {
+        // Valid 160-bit value (top 12 bytes are zero)
+        let valid_value = Fr254::from(0x12345678u64);
+        assert!(is_valid_160_bit_value(valid_value), "Small values should be valid 160-bit");
         
-        let hash_ab = poseidon_hash_arity2(a, b);
-        let hash_ba = poseidon_hash_arity2(b, a);
+        // Max valid value: 2^160 - 1
+        let mut max_bytes = [0u8; 32];
+        max_bytes[12..32].fill(0xff); // Set lower 20 bytes to all 1s
+        let max_value = Fr254::from_be_bytes_mod_order(&max_bytes);
+        assert!(is_valid_160_bit_value(max_value), "Max 160-bit value should be valid");
         
-        // This will fail with simplified hash since H(a,b) = H(b,a)
-        assert_ne!(hash_ab, hash_ba, "Full Poseidon should not be commutative");
+        // Invalid value: has bits set in positions 160-255
+        // Create a value with bit 160 set (requires bytes 0-19 to have data in byte 19)
+        let mut invalid_bytes = [0u8; 32];
+        invalid_bytes[11] = 0x01; // This sets bit 160 in big-endian (byte 11 from start)
+        let invalid_value = Fr254::from_be_bytes_mod_order(&invalid_bytes);
+        assert!(!is_valid_160_bit_value(invalid_value), "Value with bit 160 set should be invalid");
+        
+        // Zero should be valid
+        assert!(is_valid_160_bit_value(Fr254::from(0u64)), "Zero should be valid");
     }
 
     #[test]
@@ -358,5 +389,69 @@ mod tests {
         let nullifier_eth = compute_nullifier(Fr254::from(1u64), merkle_root, pkx_fe, pky_fe);
         
         assert_ne!(nullifier_base, nullifier_eth, "Nullifiers should be unique per chain");
+    }
+
+    #[test]
+    fn test_circuit_native_consistency_arity2() {
+        use ark_relations::r1cs::ConstraintSystem;
+        use ark_r1cs_std::alloc::AllocVar;
+        
+        let a = Fr254::from(12345u64);
+        let b = Fr254::from(67890u64);
+        
+        // Native hash
+        let native_hash = poseidon_hash_arity2(a, b);
+        
+        // Circuit hash
+        let cs = ConstraintSystem::new_ref();
+        let a_var = FpVar::new_witness(cs.clone(), || Ok(a)).unwrap();
+        let b_var = FpVar::new_witness(cs.clone(), || Ok(b)).unwrap();
+        
+        let circuit_hash_var = poseidon_hash_arity2_circuit(&a_var, &b_var).unwrap();
+        
+        // Check that circuit is satisfied
+        assert!(cs.is_satisfied().unwrap(), "Circuit should be satisfied");
+        
+        // Verify the circuit output matches native
+        let circuit_hash = circuit_hash_var.value().unwrap();
+        assert_eq!(native_hash, circuit_hash, 
+            "Circuit and native Poseidon implementations must produce identical results");
+    }
+
+    #[test]
+    fn test_circuit_native_consistency_arity4() {
+        use ark_relations::r1cs::ConstraintSystem;
+        use ark_r1cs_std::alloc::AllocVar;
+        
+        let inputs = [
+            Fr254::from(1u64),
+            Fr254::from(2u64),
+            Fr254::from(3u64),
+            Fr254::from(4u64),
+        ];
+        
+        // Native hash
+        let native_hash = poseidon_hash_arity4(inputs);
+        
+        // Circuit hash
+        let cs = ConstraintSystem::new_ref();
+        let input_vars: Vec<FpVar<Fr254>> = inputs
+            .iter()
+            .map(|&x| FpVar::new_witness(cs.clone(), || Ok(x)).unwrap())
+            .collect();
+        
+        let input_refs: [&FpVar<Fr254>; 4] = [
+            &input_vars[0], &input_vars[1], &input_vars[2], &input_vars[3]
+        ];
+        
+        let circuit_hash_var = poseidon_hash_arity4_circuit(input_refs).unwrap();
+        
+        // Check that circuit is satisfied
+        assert!(cs.is_satisfied().unwrap(), "Circuit should be satisfied");
+        
+        // Verify the circuit output matches native
+        let circuit_hash = circuit_hash_var.value().unwrap();
+        assert_eq!(native_hash, circuit_hash, 
+            "Circuit and native Poseidon implementations must produce identical results");
     }
 }

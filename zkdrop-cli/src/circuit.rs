@@ -24,6 +24,7 @@ use ark_r1cs_std::{
     boolean::Boolean,
     eq::EqGadget,
     fields::fp::FpVar,
+    ToBitsGadget,
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
@@ -196,7 +197,7 @@ impl AirdropClaimCircuit {
         let mut current_var = poseidon_hash_arity2_circuit(leaf, &zero_var)?;
 
         // Verify Merkle path
-        for i in 0..self.tree_height {
+        for (i, _path_var) in path_vars.iter().enumerate().take(self.tree_height) {
             let is_right = private.path_indices.get(i).copied().unwrap_or(false);
             
             // Use Poseidon hash: H(left, right)
@@ -235,21 +236,30 @@ impl AirdropClaimCircuit {
         Ok(nullifier_var)
     }
 
-    /// Enforce recipient < 2^160 (MINIMAL VERSION)
+    /// Enforce recipient < 2^160
     ///
-    /// This is a minimal check that relies on CLI validation.
-    /// The CLI ensures recipient is a valid 160-bit Ethereum address.
+    /// This function constrains that the recipient is a valid 160-bit Ethereum address.
+    /// It decomposes the recipient into bits and verifies that bits 160-253 are all zero.
     fn enforce_recipient_range(
         &self,
         _cs: ConstraintSystemRef<Fr254>,
-        _recipient: &FpVar<Fr254>,
+        recipient: &FpVar<Fr254>,
     ) -> Result<(), SynthesisError> {
-        // NOTE: Full 160-bit range check is skipped to reduce constraints.
-        // The CLI validates recipient < 2^160 before generating the proof.
-        // This is acceptable because:
-        // 1. The recipient is a public input (visible to all)
-        // 2. The contract validates recipient < 2^160 on-chain
-        // 3. Invalid recipients would simply fail the contract validation
+        
+        // Convert recipient to bits (little-endian: bit 0 is LSB)
+        let bits = recipient.to_non_unique_bits_le()?;
+        
+        // Ensure we have at least 254 bits (BN254 field size)
+        if bits.len() < 254 {
+            return Err(SynthesisError::Unsatisfiable);
+        }
+        
+        // Enforce that bits 160-253 are all zero
+        // This ensures recipient < 2^160
+        for bit in bits.iter().take(254).skip(160) {
+            let zero_bit = Boolean::constant(false);
+            bit.enforce_equal(&zero_bit)?;
+        }
         
         Ok(())
     }
@@ -364,9 +374,9 @@ pub fn estimate_constraint_count(tree_height: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_ff::{PrimeField, UniformRand};
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::test_rng;
-    use ark_ff::UniformRand;
 
     #[test]
     fn test_circuit_synthesis_structure() {
@@ -477,15 +487,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Test needs debugging - recipient range proof constraint issue"]
     fn test_recipient_range_proof() {
-        use crate::poseidon::{poseidon_hash_arity2, compute_nullifier};
+        use crate::poseidon::{poseidon_hash_arity2, compute_nullifier, compute_leaf};
         
         let tree_height = 4;
         let chain_id = 8453u64;
         
         // Build a proper merkle tree
-        let leaf = Fr254::from(100u64);
+        // The leaf is H(address, 0), not the address directly
+        let address = Fr254::from(100u64);
+        let leaf = compute_leaf(address); // H(address, 0)
         let merkle_path: Vec<Fr254> = (0..tree_height).map(|i| Fr254::from(i as u64 + 200)).collect();
         let path_indices: Vec<bool> = (0..tree_height).map(|i| i % 2 == 0).collect();
         
@@ -502,12 +513,16 @@ mod tests {
         let merkle_root = current;
         
         // Compute nullifier
-        let pk_x = leaf; // Use leaf as pk_x for this test
-        let pk_y = Fr254::from(42u64);
+        let pk_x = Fr254::from(111u64);
+        let pk_y = Fr254::from(222u64);
         let nullifier = compute_nullifier(Fr254::from(chain_id), merkle_root, pk_x, pk_y);
 
         // Test with valid recipient (< 2^160)
-        let valid_recipient = Fr254::from((1u128 << 100) - 1); // Fits in 160 bits
+        // Must be properly formatted as a 160-bit value (top 12 bytes must be zero)
+        // In LE: bytes 20-31 must be zero
+        let mut recipient_bytes = [0u8; 32];
+        recipient_bytes[0..4].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]); // Some 4-byte address suffix
+        let valid_recipient = Fr254::from_le_bytes_mod_order(&recipient_bytes);
         
         let public_inputs = AirdropPublicInputs {
             merkle_root,
@@ -516,8 +531,7 @@ mod tests {
         };
 
         let private_inputs = AirdropPrivateInputs {
-            address: Fr254::from(0u64),
-            
+            address,
             private_key: Fr254::from(1u64), // Non-zero
             merkle_path,
             path_indices,
@@ -536,21 +550,23 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Test needs debugging - merkle path verification in circuit"]
     fn test_nullifier_computation_in_circuit() {
-        use crate::poseidon::{poseidon_hash_arity2, compute_nullifier};
+        use crate::poseidon::{poseidon_hash_arity2, compute_nullifier, compute_leaf};
 
         let tree_height = 4;
         let chain_id = 8453u64;
         let pk_x = Fr254::from(111u64);
         let pk_y = Fr254::from(222u64);
         
-        // Build a proper merkle tree with pk_x as the leaf
+        // Build a proper merkle tree
+        // The leaf is H(address, 0), not the address directly
+        let address = Fr254::from(100u64);
+        let leaf = compute_leaf(address); // H(address, 0)
         let merkle_path: Vec<Fr254> = (0..tree_height).map(|i| Fr254::from(i as u64 + 100)).collect();
         let path_indices: Vec<bool> = (0..tree_height).map(|i| i % 2 == 0).collect();
         
         // Compute root using proper hash
-        let mut current = pk_x;
+        let mut current = leaf;
         for i in 0..tree_height {
             let (left, right) = if path_indices[i] {
                 (merkle_path[i], current)
@@ -569,15 +585,20 @@ mod tests {
             pk_y,
         );
 
+        // Recipient must be < 2^160
+        // In LE: bytes 20-31 must be zero
+        let mut recipient_bytes = [0u8; 32];
+        recipient_bytes[0..4].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        let valid_recipient = Fr254::from_le_bytes_mod_order(&recipient_bytes);
+
         let public_inputs = AirdropPublicInputs {
             merkle_root,
             nullifier: expected_nullifier,
-            recipient: Fr254::from(0x11111111111111111111111111111111u128),
+            recipient: valid_recipient,
         };
 
         let private_inputs = AirdropPrivateInputs {
-            address: Fr254::from(0u64),
-            
+            address,
             private_key: Fr254::from(42u64),
             merkle_path,
             path_indices,
@@ -690,6 +711,118 @@ mod tests {
         // Should be satisfied (not point at infinity since pk_y != 0)
         // Note: This may fail depending on merkle path validation
         // The main point is that the infinity check doesn't reject it
+    }
+
+    #[test]
+    fn test_invalid_recipient_range() {
+        use crate::poseidon::{compute_leaf, poseidon_hash_arity2};
+        
+        let tree_height = 4;
+        let chain_id = 8453u64;
+        
+        // Build a valid merkle tree
+        let address = Fr254::from(100u64);
+        let leaf = compute_leaf(address);
+        let merkle_path: Vec<Fr254> = (0..tree_height).map(|i| Fr254::from(i as u64 + 200)).collect();
+        let path_indices: Vec<bool> = (0..tree_height).map(|i| i % 2 == 0).collect();
+        
+        let mut current = leaf;
+        for i in 0..tree_height {
+            let (left, right) = if path_indices[i] {
+                (merkle_path[i], current)
+            } else {
+                (current, merkle_path[i])
+            };
+            current = poseidon_hash_arity2(left, right);
+        }
+        let merkle_root = current;
+        
+        // Create an INVALID recipient (>= 2^160)
+        // Set bit 160 to make it invalid
+        let mut invalid_recipient_bytes = [0u8; 32];
+        invalid_recipient_bytes[11] = 0x01; // Sets bit 160
+        let invalid_recipient = Fr254::from_be_bytes_mod_order(&invalid_recipient_bytes);
+        
+        let public_inputs = AirdropPublicInputs {
+            merkle_root,
+            nullifier: Fr254::from(12345u64), // Dummy
+            recipient: invalid_recipient,
+        };
+
+        let private_inputs = AirdropPrivateInputs {
+            address,
+            private_key: Fr254::from(1u64),
+            merkle_path,
+            path_indices,
+            pk_x: Fr254::from(111u64),
+            pk_y: Fr254::from(222u64),
+        };
+
+        let circuit = AirdropClaimCircuit::new(tree_height, chain_id)
+            .with_witness(public_inputs, private_inputs);
+
+        let cs = ConstraintSystem::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+
+        // Should NOT be satisfied with invalid recipient
+        assert!(!cs.is_satisfied().unwrap(), "Circuit should reject recipient >= 2^160");
+    }
+
+    #[test]
+    fn test_wrong_merkle_root() {
+        use crate::poseidon::{compute_leaf, poseidon_hash_arity2};
+        
+        let tree_height = 4;
+        let chain_id = 8453u64;
+        
+        // Build a valid merkle tree
+        let address = Fr254::from(100u64);
+        let leaf = compute_leaf(address);
+        let merkle_path: Vec<Fr254> = (0..tree_height).map(|i| Fr254::from(i as u64 + 200)).collect();
+        let path_indices: Vec<bool> = (0..tree_height).map(|i| i % 2 == 0).collect();
+        
+        // Compute correct root
+        let mut current = leaf;
+        for i in 0..tree_height {
+            let (left, right) = if path_indices[i] {
+                (merkle_path[i], current)
+            } else {
+                (current, merkle_path[i])
+            };
+            current = poseidon_hash_arity2(left, right);
+        }
+        let _correct_merkle_root = current;
+        
+        // Use WRONG root
+        let wrong_root = Fr254::from(999999u64);
+        
+        let mut recipient_bytes = [0u8; 32];
+        recipient_bytes[28..32].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        let valid_recipient = Fr254::from_be_bytes_mod_order(&recipient_bytes);
+        
+        let public_inputs = AirdropPublicInputs {
+            merkle_root: wrong_root,
+            nullifier: Fr254::from(12345u64),
+            recipient: valid_recipient,
+        };
+
+        let private_inputs = AirdropPrivateInputs {
+            address,
+            private_key: Fr254::from(1u64),
+            merkle_path,
+            path_indices,
+            pk_x: Fr254::from(111u64),
+            pk_y: Fr254::from(222u64),
+        };
+
+        let circuit = AirdropClaimCircuit::new(tree_height, chain_id)
+            .with_witness(public_inputs, private_inputs);
+
+        let cs = ConstraintSystem::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+
+        // Should NOT be satisfied with wrong merkle root
+        assert!(!cs.is_satisfied().unwrap(), "Circuit should reject wrong merkle root");
     }
 }
 

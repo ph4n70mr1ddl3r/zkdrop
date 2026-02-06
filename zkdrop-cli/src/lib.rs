@@ -235,7 +235,6 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::poseidon::poseidon_hash_arity2;
     use ark_ff::UniformRand;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;

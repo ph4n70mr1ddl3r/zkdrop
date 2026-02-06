@@ -745,7 +745,6 @@ fn test_address_parsing() {
 
 /// Test Poseidon hash properties
 #[test]
-#[ignore = "Simplified hash has different properties than full Poseidon"]
 fn test_poseidon_properties() {
     let a = Fr254::from(1u64);
     let b = Fr254::from(2u64);
