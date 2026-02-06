@@ -153,114 +153,33 @@ impl AirdropClaimCircuit {
         Ok(())
     }
 
-    /// Verify that pk is a valid secp256k1 public key (Option 2 - Optimized Gadget)
+    /// Verify that pk is a valid secp256k1 public key (MINIMAL VERSION)
     ///
-    /// We enforce:
+    /// This is a minimal check that only verifies:
     /// 1. pk_x != 0 and pk_y != 0 (not point at infinity)
-    /// 2. pk_x < secp256k1_p and pk_y < secp256k1_p (valid field elements)
     ///
-    /// SECURITY NOTE: We do NOT verify pk = sk * G in-circuit.
-    /// This relies on Keccak256 preimage resistance:
-    /// - To claim, attacker needs (pk_x, pk_y) where keccak256(pk_x || pk_y)[12:32] = address
-    /// - Finding such (pk_x, pk_y) requires ~2^160 operations (infeasible)
+    /// SECURITY NOTE: 
+    /// - We do NOT verify pk = sk * G in-circuit (would require ~100k constraints)
+    /// - We do NOT verify pk_x, pk_y < secp256k1_p (relies on CLI validation)
+    /// - This relies on Keccak256 preimage resistance:
+    ///   Finding (pk_x, pk_y) that hash to a specific address requires ~2^160 ops
     fn enforce_valid_pubkey(
         &self,
-        cs: ConstraintSystemRef<Fr254>,
+        _cs: ConstraintSystemRef<Fr254>,
         pk_x: &FpVar<Fr254>,
         pk_y: &FpVar<Fr254>,
     ) -> Result<(), SynthesisError> {
-        // 1. Check not point at infinity (pk_x != 0 or pk_y != 0)
-        // Actually, for a valid pubkey, both should be non-zero
+        // Minimal check: ensure pk_x != 0 and pk_y != 0 (not point at infinity)
         let zero = FpVar::Constant(Fr254::from(0u64));
         let pk_x_is_zero = pk_x.is_eq(&zero)?;
         let pk_y_is_zero = pk_y.is_eq(&zero)?;
         
         // Enforce that at least one coordinate is non-zero
-        // Boolean OR: !(pk_x_is_zero AND pk_y_is_zero)
         let both_zero = pk_x_is_zero.and(&pk_y_is_zero)?;
         both_zero.enforce_equal(&Boolean::constant(false))?;
 
-        // 2. Range check: pk_x < secp256k1_p and pk_y < secp256k1_p
-        // We do this by bit decomposition and comparison
-        self.enforce_field_element_range(cs.clone(), pk_x, "pk_x")?;
-        self.enforce_field_element_range(cs.clone(), pk_y, "pk_y")?;
-
-        Ok(())
-    }
-
-    /// Enforce that a value is a valid secp256k1 field element (value < secp256k1_p)
-    ///
-    /// Strategy: Decompose into 256 bits and verify the value is less than secp256k1_p
-    /// secp256k1_p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
-    fn enforce_field_element_range(
-        &self,
-        cs: ConstraintSystemRef<Fr254>,
-        value: &FpVar<Fr254>,
-        _name: &str,
-    ) -> Result<(), SynthesisError> {
-        // Get the witness value
-        let value_fe = value.value().unwrap_or(Fr254::from(0u64));
-        let value_bytes = value_fe.into_bigint().to_bytes_be();
-
-        // Allocate 256 boolean variables for the bits (big-endian order)
-        let mut bits = Vec::with_capacity(256);
-        
-        for i in 0..256 {
-            let byte_idx = i / 8;
-            let bit_idx = 7 - (i % 8); // MSB first within each byte
-            
-            let bit_value = if byte_idx < value_bytes.len() {
-                ((value_bytes[byte_idx] >> bit_idx) & 1) == 1
-            } else {
-                false
-            };
-            
-            let bit_var = Boolean::new_witness(cs.clone(), || Ok(bit_value))?;
-            bits.push(bit_var);
-        }
-
-        // Reconstruct the value from bits to ensure consistency
-        let mut reconstructed = FpVar::Constant(Fr254::from(0u64));
-        let mut power_of_two = Fr254::from(1u64);
-        
-        // Process bits in reverse order (LSB to MSB for reconstruction)
-        for i in (0..256).rev() {
-            let contribution = FpVar::from(bits[i].clone()) * FpVar::Constant(power_of_two);
-            reconstructed = reconstructed + contribution;
-            power_of_two = power_of_two.double();
-        }
-        
-        reconstructed.enforce_equal(value)?;
-
-        // Now enforce that value < secp256k1_p
-        // We do this by verifying that when interpreted as a 256-bit integer,
-        // it is less than secp256k1_p
-        //
-        // secp256k1_p in big-endian bytes:
-        // 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        // 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        // 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        // 0xFF, 0xFF, 0xFF, 0xFE, 0xFF, 0xFF, 0xFC, 0x2F
-        //
-        // For efficiency, we note that secp256k1_p is very close to 2^256
-        // The top 32 bytes are all 0xFF except the last 4 bytes: 0xFFFFFFFEFFFFFC2F
-        //
-        // Simplified check: verify the value fits in 256 bits (already done above)
-        // and if the top 224 bits are all 1s, check the bottom 32 bits are < 0xFFFFFFFEFFFFFC2F
-        //
-        // For this implementation, we use a simpler approach:
-        // Since secp256k1_p > BN254_Fr for most practical values,
-        // and we're working in BN254, we just need to ensure the value
-        // doesn't exceed secp256k1_p when interpreted as an integer.
-        //
-        // Actually, since secp256k1_p ≈ 2^256 and BN254_Fr ≈ 2^254,
-        // most values in BN254 are already < secp256k1_p.
-        // The only case where this matters is when the high bits are set.
-        //
-        // For this optimized gadget, we rely on the fact that:
-        // 1. The CLI provides valid secp256k1 coordinates (checked off-circuit)
-        // 2. The bit decomposition ensures the value is canonical
-        // 3. The actual security comes from Keccak256 preimage resistance
+        // Note: Full range checks (pk_x, pk_y < secp256k1_p) are skipped
+        // They add ~600+ constraints and are handled by CLI validation
 
         Ok(())
     }
